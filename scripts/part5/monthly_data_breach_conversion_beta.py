@@ -7,9 +7,9 @@ import os
 
 # Paths and Config
 ITS_DATA_PATH = 'data/processed/part1/its_victims.parquet'
-RAW_BREACH_PATH = 'data/processed/part3/PRC_augmented.csv' 
-CSV_OUTPUT_DIR = 'data/processed/part5/beta/'
-OUTPUT_DIR = os.path.join('plots', 'part5', 'beta')
+RAW_BREACH_PATH = 'data/processed/part3/PRC_augmented.csv'
+CSV_OUTPUT_DIR = 'data/processed/part5/'
+OUTPUT_DIR = os.path.join('plots', 'part5')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CSV_OUTPUT_DIR, exist_ok=True)
 
@@ -139,7 +139,7 @@ ax1.text(0.05, 0.05, f"Fit Equation:\n{eqn_text}",
 plt.tight_layout()
 save_plot(fig1, 'conversion_rate_beta')
 
-merged_df.to_csv(os.path.join(CSV_OUTPUT_DIR, 'conversion_data_beta.csv'), index=False)
+merged_df.to_csv(os.path.join(CSV_OUTPUT_DIR, 'conversion_data.csv'), index=False)
 
 # --- Console Output ---
 print(f"\n--- Conversion Rates (Victims per 100k Records) with β={BETA} ---")
