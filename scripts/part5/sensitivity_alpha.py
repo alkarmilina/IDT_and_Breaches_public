@@ -3,9 +3,9 @@ import numpy as np
 import os
 
 # python scripts/part5/sensitivity_alpha.py
-# Sensitivity analysis on the discount factor alpha (β in script notation).
-# Refits the log-quadratic conversion model for each alpha value and recomputes
-# upper-bound social cost estimates for the three case study breaches.
+# Sensitivity analysis on the discount factor α (Eq. 1 in paper).
+# Refits the log-quadratic conversion model for each α value and recomputes
+# upper-bound social cost estimates for the four case study breaches.
 
 ITS_DATA_PATH   = 'data/processed/part1/its_victims.parquet'
 RAW_BREACH_PATH = 'data/processed/part3/PRC_augmented.csv'
@@ -71,7 +71,7 @@ base = (base[(base['Date'] < CUTOFF_DATE) & (base['Date'] >= START_DATE)]
 base['Estimated_Victims'] = np.exp(
     np.log(base['Estimated_Victims'].astype(float)).interpolate(method='linear'))
 base['Estimated_Victims'] = base['Estimated_Victims'].ffill().bfill()
-base['Months_Since_Start'] = np.arange(len(base))
+base['t'] = np.arange(len(base))   # t = months since January 2008 (paper notation)
 
 results = []
 
@@ -88,14 +88,14 @@ for alpha in ALPHA_VALUES:
     for r in mdf['Raw_Records_Exposed']:
         s = r + alpha * s
         disc.append(s)
-    mdf['Discounted_Denominator'] = disc
+    mdf['D_t'] = disc   # discounted cumulative pool (Eq. 1)
 
-    mdf['Rate_Raw']      = (mdf['Estimated_Victims'] / mdf['Discounted_Denominator']) * 100_000
-    mdf['Rate_Smoothed'] = mdf['Rate_Raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
+    mdf['C_t_raw']    = (mdf['Estimated_Victims'] / mdf['D_t']) * 100_000
+    mdf['C_t_smooth'] = mdf['C_t_raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
 
-    fit_data  = mdf.dropna(subset=['Rate_Smoothed'])
-    x         = fit_data['Months_Since_Start'].values
-    y         = np.log(fit_data['Rate_Smoothed'].values)
+    fit_data  = mdf.dropna(subset=['C_t_smooth'])
+    x         = fit_data['t'].values
+    y         = np.log(fit_data['C_t_smooth'].values)
     coeffs    = np.polyfit(x, y, 2)
     poly_log  = np.poly1d(coeffs)
 
@@ -110,7 +110,7 @@ for alpha in ALPHA_VALUES:
         for k in range(lag_idx, len(mdf)):
             months_since = k - T_idx
             fresh        = study['records'] * (alpha ** months_since)
-            t            = mdf.iloc[k]['Months_Since_Start']
+            t            = mdf.iloc[k]['t']
             conv         = np.exp(poly_log(t)) / 100_000
             victims      = fresh * conv
             sc           = np.interp(t, KNOWN_T, KNOWN_COSTS)

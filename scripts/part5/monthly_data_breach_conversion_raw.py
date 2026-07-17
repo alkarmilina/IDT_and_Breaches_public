@@ -85,18 +85,18 @@ merged_df['Estimated_Victims'] = merged_df['Estimated_Victims'].ffill().bfill()
 merged_df['Um_Final'] = merged_df['Raw_Records_Exposed']
 
 # --- 3. CONVERSION RATES ---
-merged_df['Rate_Raw'] = (merged_df['Estimated_Victims'] / merged_df['Um_Final']) * 100000
-merged_df['Rate_Smoothed'] = merged_df['Rate_Raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
+merged_df['C_t_raw']    = (merged_df['Estimated_Victims'] / merged_df['Um_Final']) * 100_000
+merged_df['C_t_smooth'] = merged_df['C_t_raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
 
-# --- 4. SMOOTH BLUE LINE FIT (TIME-BASED LOG REGRESSION) ---
-merged_df['Months_Since_Start'] = np.arange(len(merged_df))
-fit_data = merged_df.dropna(subset=['Rate_Smoothed']).copy()
-x_time = fit_data['Months_Since_Start'].values
-y_log_rate = np.log(fit_data['Rate_Smoothed'].values)
+# --- 4. LOG-QUADRATIC FIT (Eq. 3 in paper) ---
+merged_df['t'] = np.arange(len(merged_df))   # t = months since January 2008
+fit_data = merged_df.dropna(subset=['C_t_smooth']).copy()
+x_time = fit_data['t'].values
+y_log_rate = np.log(fit_data['C_t_smooth'].values)
 
 coeffs = np.polyfit(x_time, y_log_rate, 2)
 poly_log = np.poly1d(coeffs)
-merged_df['Smooth_Blue_Trend'] = np.exp(poly_log(merged_df['Months_Since_Start']))
+merged_df['C_t_fit'] = np.exp(poly_log(merged_df['t']))
 
 # --- 5. VISUALIZATION ---
 
@@ -120,9 +120,9 @@ def save_plot(fig, name):
 
 # PLOT 1: Conversion Rate
 fig1, ax1 = plt.subplots(figsize=(16, 12))
-ax1.plot(merged_df['Date'], merged_df['Rate_Raw'], color='purple', alpha=0.1, linewidth=2, label='Monthly raw rate')
-ax1.plot(merged_df['Date'], merged_df['Rate_Smoothed'], color='purple', linewidth=6, label='6-mo moving avg')
-ax1.plot(merged_df['Date'], merged_df['Smooth_Blue_Trend'], color='cyan', linewidth=8, label='Time based log-quadratic regression')
+ax1.plot(merged_df['Date'], merged_df['C_t_raw'],    color='purple', alpha=0.1, linewidth=2, label='Monthly raw rate')
+ax1.plot(merged_df['Date'], merged_df['C_t_smooth'], color='purple', linewidth=6, label='6-mo moving avg')
+ax1.plot(merged_df['Date'], merged_df['C_t_fit'],    color='cyan',   linewidth=8, label='Time based log-quadratic regression')
 ax1.set_yscale('log')
 ax1.set_title("Month-to-Month Breach Victim to IDT Conversion Rate", pad=20)
 ax1.set_ylabel('Victims per 100k Records')
@@ -138,8 +138,8 @@ events = [
 
 for label, date_str, offset in events:
     event_date = pd.to_datetime(date_str)
-    # Changed y_val to reference Rate_Smoothed
-    y_val = merged_df.loc[merged_df['Date'] == event_date, 'Rate_Smoothed'].values
+    # y_val references the smoothed conversion rate C_t_smooth
+    y_val = merged_df.loc[merged_df['Date'] == event_date, 'C_t_smooth'].values
     if len(y_val) > 0:
         ax1.annotate(label, 
                      xy=(event_date, y_val[0]), 
@@ -151,7 +151,7 @@ for label, date_str, offset in events:
 
 ax1.legend(loc='upper right', frameon=True)
 
-eqn_text = rf"$\ln(Rate) = ({format_sci(coeffs[0])})t^2 + ({format_sci(coeffs[1])})t + {coeffs[2]:.2f}$"
+eqn_text = rf"$\ln(\mathcal{{C}}_t) = ({format_sci(coeffs[0])})t^2 + ({format_sci(coeffs[1])})t + {coeffs[2]:.2f}$"
 ax1.text(0.05, 0.05, f"Fit Equation:\n{eqn_text}\n(t = months since start)", 
          transform=ax1.transAxes, fontsize=24, verticalalignment='bottom', 
          bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))

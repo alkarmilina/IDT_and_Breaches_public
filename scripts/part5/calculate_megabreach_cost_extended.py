@@ -29,8 +29,8 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # ── Model parameters (must match monthly_data_breach_conversion_beta.py) ──
 ALPHA        = 0.80   # monthly discount factor
 DISC_LAG     = 2      # discovery lag (months)
-THETA        = 1.75   # under-reporting scaler (baked into Rate_Smoothed already)
-SMOOTH_WIN   = 6      # smoothing window used when producing Rate_Smoothed
+THETA        = 1.75   # under-reporting scaler (baked into C_t_smooth already)
+SMOOTH_WIN   = 6      # smoothing window used when producing C_t_smooth
 
 # ── Mega-breach catalogue ───────────────────────────────────────────────────
 # month       : YYYY-MM when data entered criminal ecosystem (discovery/disclosure)
@@ -148,10 +148,10 @@ BREACH_DATA = [
 
 
 def fit_log_quadratic(conv_df):
-    """Re-fit log-quadratic to Rate_Smoothed, returning a poly1d and t=0 anchor."""
-    df = conv_df.dropna(subset=['Rate_Smoothed']).copy()
-    df['t'] = np.arange(len(conv_df))[conv_df['Rate_Smoothed'].notna()]
-    coeffs = np.polyfit(df['t'].values, np.log(df['Rate_Smoothed'].values), 2)
+    """Re-fit log-quadratic to C_t_smooth (Eq. 3), returning a poly1d."""
+    df = conv_df.dropna(subset=['C_t_smooth']).copy()
+    df['t'] = np.arange(len(conv_df))[conv_df['C_t_smooth'].notna()]
+    coeffs = np.polyfit(df['t'].values, np.log(df['C_t_smooth'].values), 2)
     return np.poly1d(coeffs)
 
 
@@ -213,7 +213,7 @@ def main():
 
         # Snapshot conversion rate at breach month for reference
         match = conv_df[conv_df['Month_Str'] == b['month']]
-        rate_snap = float(match['Rate_Smoothed'].values[0]) if not match.empty else None
+        rate_snap = float(match['C_t_smooth'].values[0]) if not match.empty else None
 
         harm_ratio = (cost_ub / b['settlement']) if (cost_ub and b['settlement']) else None
 

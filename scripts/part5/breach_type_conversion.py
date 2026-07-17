@@ -28,7 +28,7 @@ os.makedirs(OUTPUT_CSV_DIR, exist_ok=True)
 os.makedirs(OUTPUT_PLOT_DIR, exist_ok=True)
 
 # ── PARAMETERS ─────────────────────────────────────────────────────────────────
-BETA          = 0.80   # monthly decay of stolen-record utility
+ALPHA         = 0.80   # monthly discount factor α (Eq. 1 in paper)
 SMOOTH_WINDOW = 6      # months for moving-average smoothing
 CUTOFF_DATE   = '2022-01-01'
 START_DATE    = '2008-01-01'
@@ -126,11 +126,12 @@ def get_monthly_records(df_prc, label):
     return monthly
 
 
-def discounted_cumsum(series, beta):
+def discounted_cumsum(series, alpha):
+    """D_t^τ = Σ α^(t-k) · θ · M_k^τ  (type-specific Eq. 1 variant)"""
     result = []
     current = 0.0
     for v in series:
-        current = v * THETA + beta * current
+        current = v * THETA + alpha * current
         result.append(current)
     return result
 
@@ -177,19 +178,19 @@ def main():
         monthly_rec = get_monthly_records(prc_df, label)
         merged = base.copy()
         merged = merged.merge(monthly_rec, on='Year_Month', how='left').fillna({'Raw_Records': 0})
-        merged['D_t'] = discounted_cumsum(merged['Raw_Records'].values, BETA)
+        merged['D_t'] = discounted_cumsum(merged['Raw_Records'].values, ALPHA)
 
         # Avoid division by near-zero
         min_pool = merged['D_t'].replace(0, np.nan).quantile(0.05)
         merged['D_t_safe'] = merged['D_t'].clip(lower=max(min_pool, 1))
 
-        merged['Rate_Raw']      = (merged['Estimated_Victims'] / merged['D_t_safe']) * 100_000
-        merged['Rate_Smoothed'] = merged['Rate_Raw'].rolling(SMOOTH_WINDOW, center=True).mean()
-        merged['Label']         = label
+        merged['C_t_raw']    = (merged['Estimated_Victims'] / merged['D_t_safe']) * 100_000
+        merged['C_t_smooth'] = merged['C_t_raw'].rolling(SMOOTH_WINDOW, center=True).mean()
+        merged['Label']      = label
 
-        poly, coeffs = fit_log_quadratic(merged['t'].values, merged['Rate_Smoothed'].values)
+        poly, coeffs = fit_log_quadratic(merged['t'].values, merged['C_t_smooth'].values)
         if poly is not None:
-            merged['Rate_Fit'] = np.exp(poly(merged['t'].values))
+            merged['C_t_fit'] = np.exp(poly(merged['t'].values))
             polys[label] = (poly, coeffs)
             fit_rows.append({
                 'breach_type': label,
@@ -197,11 +198,11 @@ def main():
             })
             print(f'    ln(C) = ({format_sci(coeffs[0])})t² + ({format_sci(coeffs[1])})t + {coeffs[2]:.4f}')
         else:
-            merged['Rate_Fit'] = np.nan
+            merged['C_t_fit'] = np.nan
 
         all_rows.append(merged[['Year_Month', 'Date', 't', 'Label',
-                                 'Raw_Records', 'D_t', 'Rate_Raw',
-                                 'Rate_Smoothed', 'Rate_Fit']])
+                                 'Raw_Records', 'D_t', 'C_t_raw',
+                                 'C_t_smooth', 'C_t_fit']])
 
     combined = pd.concat(all_rows, ignore_index=True)
     combined.to_csv(f'{OUTPUT_CSV_DIR}/breach_type_conversion.csv', index=False)
@@ -237,10 +238,10 @@ def main():
     for label in FOCUS_TYPES:
         sub = combined[combined['Label'] == label]
         c   = TYPE_COLORS[label]
-        ax.plot(sub['Date'], sub['Rate_Smoothed'], color=c, linewidth=4,
+        ax.plot(sub['Date'], sub['C_t_smooth'], color=c, linewidth=4,
                 alpha=0.75, label=f'{label} (6-mo avg)')
-        if 'Rate_Fit' in sub.columns:
-            ax.plot(sub['Date'], sub['Rate_Fit'], color=c, linewidth=3,
+        if 'C_t_fit' in sub.columns:
+            ax.plot(sub['Date'], sub['C_t_fit'], color=c, linewidth=3,
                     linestyle='--', alpha=0.9, label=f'{label} fit')
 
     # Event lines + labels below the x-axis
@@ -298,7 +299,7 @@ def main():
         total_cost      = 0.0
         for k in range(lag, len(hack_dates)):
             months_since = k - T_idx
-            fresh_records = cs['size'] * (BETA ** months_since)
+            fresh_records = cs['size'] * (ALPHA ** months_since)
             t_k           = hack_dates.iloc[k]['t']
             conv_rate     = np.exp(hack_poly(t_k)) / 100_000
             monthly_vic   = fresh_records * conv_rate

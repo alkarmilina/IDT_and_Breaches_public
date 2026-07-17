@@ -100,8 +100,8 @@ def calculate_section7_supply(row):
 merged_df['Um_Final'] = merged_df.apply(calculate_section7_supply, axis=1)
 
 # --- 4. CONVERSION RATE ---
-merged_df['Rate_Raw'] = (merged_df['Estimated_Victims'] / merged_df['Um_Final']) * 100000
-merged_df['Rate_Smoothed'] = merged_df['Rate_Raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
+merged_df['C_t_raw']    = (merged_df['Estimated_Victims'] / merged_df['Um_Final']) * 100_000
+merged_df['C_t_smooth'] = merged_df['C_t_raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
 
 # --- 5. VISUALIZATION ---
 
@@ -125,9 +125,9 @@ plt.savefig(os.path.join(OUTPUT_DIR, 'overlay.pdf'), dpi=300)
 
 # Plot 2: Conversion Rate
 fig, ax = plt.subplots(figsize=(16, 12)) 
-ax.plot(merged_df['Date'], merged_df['Rate_Raw'], color='purple', alpha=0.25, 
+ax.plot(merged_df['Date'], merged_df['C_t_raw'],    color='purple', alpha=0.25,
          linewidth=2, label='Monthly Rate')
-ax.plot(merged_df['Date'], merged_df['Rate_Smoothed'], color='purple', 
+ax.plot(merged_df['Date'], merged_df['C_t_smooth'], color='purple',
          linewidth=6, label=f'{SMOOTH_WINDOW}-Mo Moving Avg')
 
 ax.set_title("Month-to-Month Breach Victim to IDT Conversion Rate", pad=20)

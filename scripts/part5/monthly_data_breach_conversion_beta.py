@@ -13,10 +13,10 @@ OUTPUT_DIR = os.path.join('plots', 'part5')
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(CSV_OUTPUT_DIR, exist_ok=True)
 
-SMOOTH_WINDOW = 6  
+SMOOTH_WINDOW = 6
 CUTOFF_DATE = '2022-01-01'
 START_DATE = '2008-01-01'
-BETA = 0.80  
+ALPHA = 0.80   # monthly discount factor (α in paper, Eq. 1)
 
 plt.style.use('seaborn-v0_8-paper')
 plt.rcParams.update({
@@ -78,25 +78,29 @@ merged_df = merged_df[(merged_df['Date'] < CUTOFF_DATE) & (merged_df['Date'] >= 
 merged_df['Estimated_Victims'] = np.exp(np.log(merged_df['Estimated_Victims'].astype(float)).interpolate(method='linear'))
 merged_df['Estimated_Victims'] = merged_df['Estimated_Victims'].ffill().bfill()
 
-discounted_records = []
+# D_t = Σ α^(t-k) M_k  (Eq. 1 in paper)
+D_t_values = []
 current_sum = 0
 for r in merged_df['Raw_Records_Exposed']:
-    current_sum = r + (BETA * current_sum)
-    discounted_records.append(current_sum)
+    current_sum = r + (ALPHA * current_sum)
+    D_t_values.append(current_sum)
 
-merged_df['Discounted_Denominator'] = discounted_records
+merged_df['D_t'] = D_t_values   # discounted cumulative record pool
 
-merged_df['Rate_Raw'] = (merged_df['Estimated_Victims'] / merged_df['Discounted_Denominator']) * 100000
-merged_df['Rate_Smoothed'] = merged_df['Rate_Raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
+# C_t = (IDT victims at t) / D_t × 100,000  (Eq. 2 in paper)
+merged_df['C_t_raw']    = (merged_df['Estimated_Victims'] / merged_df['D_t']) * 100_000
+merged_df['C_t_smooth'] = merged_df['C_t_raw'].rolling(window=SMOOTH_WINDOW, center=True).mean()
 
-merged_df['Months_Since_Start'] = np.arange(len(merged_df))
-fit_data = merged_df.dropna(subset=['Rate_Smoothed']).copy()
-x_time = fit_data['Months_Since_Start'].values
-y_log_rate = np.log(fit_data['Rate_Smoothed'].values)
+# t = months since January 2008  (paper notation)
+merged_df['t'] = np.arange(len(merged_df))
+fit_data = merged_df.dropna(subset=['C_t_smooth']).copy()
+x_time = fit_data['t'].values
+y_log_rate = np.log(fit_data['C_t_smooth'].values)
 
+# ln(C_t) = a*t^2 + b*t + c  (Eq. 3 in paper)
 coeffs = np.polyfit(x_time, y_log_rate, 2)
 poly_log = np.poly1d(coeffs)
-merged_df['Smooth_Trend'] = np.exp(poly_log(merged_df['Months_Since_Start']))
+merged_df['C_t_fit'] = np.exp(poly_log(merged_df['t']))
 
 def format_sci(val):
     s = "{:.4e}".format(val)
@@ -111,9 +115,9 @@ def save_plot(fig, name):
 fig1, ax1 = plt.subplots(figsize=(16, 12))
 
 # Plot lines with specific labels for the legend
-ax1.plot(merged_df['Date'], merged_df['Rate_Raw'], color='mediumpurple', linewidth=4, alpha=0.7, label='Monthly rate')
-ax1.plot(merged_df['Date'], merged_df['Rate_Smoothed'], color='indigo', linewidth=6, label='6-Mo moving avg')
-ax1.plot(merged_df['Date'], merged_df['Smooth_Trend'], color='cyan', linewidth=8, label='Fit')
+ax1.plot(merged_df['Date'], merged_df['C_t_raw'],    color='mediumpurple', linewidth=4, alpha=0.7, label='Monthly rate')
+ax1.plot(merged_df['Date'], merged_df['C_t_smooth'], color='indigo',       linewidth=6, label='6-Mo moving avg')
+ax1.plot(merged_df['Date'], merged_df['C_t_fit'],    color='cyan',         linewidth=8, label='Fit')
 
 ax1.set_yscale('log')
 ax1.set_title(f"Estimated Conversion Rate of Cumulative Records to IDT", pad=20)
@@ -126,28 +130,29 @@ ax1.legend(loc='upper right', frameon=True, facecolor='white', framealpha=0.9)
 events = [('Equifax', '2017-09-01', (40, 40)), ('Yahoo', '2016-12-01', (-40, 40)), ('Target', '2013-12-01', (-40, 40)), ('Heartland', '2009-01-01', (40, 40))]
 for label, date_str, offset in events:
     event_date = pd.to_datetime(date_str)
-    y_val = merged_df.loc[merged_df['Date'] == event_date, 'Rate_Smoothed'].values
+    y_val = merged_df.loc[merged_df['Date'] == event_date, 'C_t_smooth'].values
     if len(y_val) > 0:
         ax1.annotate(label, xy=(event_date, y_val[0]), xytext=offset, textcoords='offset points',
                      arrowprops=dict(arrowstyle='->', color='black', lw=2), fontsize=25, fontweight='bold',
                      bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.7))
 
-eqn_text = rf"$\ln(Rate) = ({format_sci(coeffs[0])})t^2 + ({format_sci(coeffs[1])})t + {coeffs[2]:.2f}$"
+eqn_text = rf"$\ln(\mathcal{{C}}_t) = ({format_sci(coeffs[0])})t^2 + ({format_sci(coeffs[1])})t + {coeffs[2]:.2f}$"
 ax1.text(0.05, 0.05, f"Fit Equation:\n{eqn_text}", 
          transform=ax1.transAxes, fontsize=24, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
 plt.tight_layout()
 save_plot(fig1, 'conversion_rate_beta')
 
+merged_df['Month_Str'] = merged_df['Year_Month']   # alias used by downstream scripts
 merged_df.to_csv(os.path.join(CSV_OUTPUT_DIR, 'conversion_data.csv'), index=False)
 
 # --- Console Output ---
-print(f"\n--- Conversion Rates (Victims per 100k Records) with β={BETA} ---")
+print(f"\n--- Conversion Rates C_t (Victims per 100k Records) with α={ALPHA} ---")
 target_dates = {'Heartland': '2009-01-01', 'Target': '2013-12-01', 'Yahoo': '2016-12-01', 'Equifax': '2017-09-01'}
 for name, d_str in target_dates.items():
     row = merged_df[merged_df['Date'] == pd.to_datetime(d_str)]
     if not row.empty:
-        rate = row['Rate_Smoothed'].values[0]
+        rate = row['C_t_smooth'].values[0]
         print(f"{name} ({d_str}): {rate:.4f}")
 
 print(f"\n--- Upper Bound Social Cost Projections (Sum of Harm Lifecycle) ---")
@@ -170,8 +175,8 @@ for study in case_studies:
     
     for k in range(lag_idx, len(merged_df)):
         months_since_breach = k - T_idx
-        fresh_records = study['size'] * (BETA ** months_since_breach)
-        t = merged_df.iloc[k]['Months_Since_Start']
+        fresh_records = study['size'] * (ALPHA ** months_since_breach)
+        t = merged_df.iloc[k]['t']
         conv_rate = np.exp(poly_log(t)) / 100000
         monthly_victims = fresh_records * conv_rate
         current_social_cost_per_victim = np.interp(t, known_t, known_costs)
