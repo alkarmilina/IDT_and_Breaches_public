@@ -57,9 +57,10 @@ HACK_MEGA_SHOCKS = {
 
 # Case studies — all HACK
 CASE_STUDIES = [
-    {'name': 'Heartland', 'date': '2009-01-01', 'size': 130_000_000},
-    {'name': 'Target',    'date': '2013-12-01', 'size':  40_000_000},
-    {'name': 'Equifax',   'date': '2017-09-01', 'size': 147_000_000},
+    {'name': 'Heartland', 'date': '2009-01-01', 'size':   130_000_000},
+    {'name': 'Target',    'date': '2013-12-01', 'size':    40_000_000},
+    {'name': 'Yahoo',     'date': '2016-12-01', 'size': 1_000_000_000},
+    {'name': 'Equifax',   'date': '2017-09-01', 'size':   147_000_000},
 ]
 SOCIAL_COST_INTERP_T    = [0,  48,  72,  96, 120, 156]
 SOCIAL_COST_INTERP_VALS = [1110.31, 921.38, 853.41, 245.27, 244.40, 295.73]

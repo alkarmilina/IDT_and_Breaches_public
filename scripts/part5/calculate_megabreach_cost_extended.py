@@ -183,17 +183,16 @@ def upper_bound_cost(breach_month_str, records, conv_df, poly_log, social_cost_f
     return total_victims, total_cost
 
 
-def make_social_cost_fn(cost_df, conv_df):
-    """Return a function t -> $/victim via linear interpolation of survey years."""
-    # Map survey years to month index t
-    conv_df = conv_df.copy().reset_index(drop=True)
-    conv_df['t'] = np.arange(len(conv_df))
-    conv_df['year'] = pd.to_datetime(conv_df['Date']).dt.year
+def make_social_cost_fn(cost_df):
+    """Return a function t -> $/victim via piecewise linear interpolation.
 
-    year_to_t = (conv_df.groupby('year')['t'].mean().to_dict())
-    known_t    = [year_to_t[y] for y in cost_df['Year'] if y in year_to_t]
+    Anchor t values are the survey wave start months (months since Jan 2008),
+    matching the convention used in the paper: 2008→t=0, 2012→t=48, etc.
+    """
+    SURVEY_WAVE_T = {2008: 0, 2012: 48, 2014: 72, 2016: 96, 2018: 120, 2021: 156}
+    known_t    = [SURVEY_WAVE_T[y] for y in cost_df['Year'] if y in SURVEY_WAVE_T]
     known_cost = [cost_df.loc[cost_df['Year'] == y, 'Total Social Cost per Victim ($)'].values[0]
-                  for y in cost_df['Year'] if y in year_to_t]
+                  for y in cost_df['Year'] if y in SURVEY_WAVE_T]
     return lambda t: float(np.interp(t, known_t, known_cost))
 
 
@@ -203,7 +202,7 @@ def main():
     conv_df['Date'] = pd.to_datetime(conv_df['Date'])
 
     poly_log       = fit_log_quadratic(conv_df)
-    social_cost_fn = make_social_cost_fn(cost_df, conv_df)
+    social_cost_fn = make_social_cost_fn(cost_df)
 
     rows = []
     for b in BREACH_DATA:
