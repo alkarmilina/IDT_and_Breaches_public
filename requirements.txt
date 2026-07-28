@@ -1,0 +1,8 @@
+pandas>=2.2
+numpy>=2.0
+scipy>=1.13
+statsmodels>=0.14
+matplotlib>=3.8
+seaborn>=0.13
+requests>=2.31
+thefuzz>=0.20

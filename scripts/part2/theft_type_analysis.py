@@ -5,35 +5,49 @@ import os
 # python scripts/part2/theft_type_analysis.py
 
 """
-Analysis: Part 2 - Longitudinal Incident Characteristic Summary (Master Data Table)
+Part 2: Incident Characteristics by Year
+
+Builds a year-by-year summary of theft type, discovery method, and how
+victims' information was obtained, each expressed as a weighted count
+and percentage of that year's total victims. Averaging each category's
+percentage across the six years produces the paper's incident summary
+table.
+
+Setup:
+Reads the harmonized victim dataset from part1. Codes for discovery
+method and theft method match the harmonization dictionary. Theft type
+uses inclusive filtering, a victim who experienced two types counts in
+both, plus a separate "Multiple Types" row tracks that overlap.
+
+Goal:
+Produce the year-by-year data behind the paper's incident summary
+table.
+
+Outputs:
+- data/processed/part2/combined_theft_analysis_by_year.csv: one row per
+  category (theft type, discovery method, or obtainment method), one
+  pair of columns (count, percentage) per year.
 """
 
+
 def analyze_theft_data_by_year():
-    # --- 1. Path Configuration ---
+    print("\n--- Part 2: Incident Characteristics by Year ---")
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.abspath(os.path.join(script_dir, "../../"))
-    
-    # Input from Part 1
+
     harmonized_data_path = os.path.join(root_dir, 'data/processed/part1/its_victims.parquet')
-    
-    # Output to Part 2
     output_folder = os.path.join(root_dir, 'data/processed/part2')
     output_csv_path = os.path.join(output_folder, 'combined_theft_analysis_by_year.csv')
 
-    # Ensure the output folder exists
     os.makedirs(output_folder, exist_ok=True)
 
-    # --- 2. Load Data ---
     try:
-        print(f"Loading harmonized data from '{harmonized_data_path}'...")
         df = pd.read_parquet(harmonized_data_path)
-        print("Data loaded successfully.")
+        print(f"Loaded data from {harmonized_data_path}")
     except FileNotFoundError:
-        print(f"ERROR: The file '{harmonized_data_path}' was not found. Please run Part 1 first.")
+        print(f"Error: {harmonized_data_path} not found. Run scripts/part1/harmonize_its.py first.")
         return
-
-    # --- 3. Configuration for Analysis ---
-    years_to_analyze = [2008, 2012, 2014, 2016, 2018, 2021]
 
     theft_categories = {
         'Existing Bank Account Misuse': 'EXISTING_BANK_ACCT_MISUSE_12MO',
@@ -50,7 +64,7 @@ def analyze_theft_data_by_year():
         'Received Bill/Item Not Ordered': 4,
         'Checked Credit Report': 5,
         'Other/Unspecified': 7,
-        'Don\'t Know': 8 
+        'Don\'t Know': 8
     }
 
     theft_method_categories = {
@@ -62,76 +76,67 @@ def analyze_theft_data_by_year():
         'Other': 7
     }
 
-    # --- 4. Execution ---
-    # Convert codes to numeric to ensure matching works correctly
     df['HOW_DISCOVERED_MISUSE'] = pd.to_numeric(df['HOW_DISCOVERED_MISUSE'], errors='coerce')
     df['THEFT_METHOD'] = pd.to_numeric(df['THEFT_METHOD'], errors='coerce')
     for var in theft_categories.values():
         df[var] = pd.to_numeric(df[var], errors='coerce')
 
+    years_to_analyze = sorted(df['year'].unique())
     total_victims_by_year = df.groupby('year')['FINAL_ITS_WEIGHT'].sum()
 
-    # Theft Type Analysis
     results_theft_type = pd.DataFrame(index=list(theft_categories.keys()) + ['Multiple Types'])
-    
-    # Discovery Method Analysis
     results_discovery = pd.DataFrame(index=discovery_categories.keys())
-    
-    # Theft Method Analysis
     results_theft_method = pd.DataFrame(index=theft_method_categories.keys())
 
     for year in years_to_analyze:
         year_df = df[df['year'] == year].copy()
         total_year_victims = total_victims_by_year.get(year, 0)
-        
+
         if total_year_victims == 0: continue
 
-        # Calculate Theft Types
+        # Theft type
         for display_name, variable_name in theft_categories.items():
             weighted_count = year_df[year_df[variable_name] == 1]['FINAL_ITS_WEIGHT'].sum()
             results_theft_type.loc[display_name, f'{year} (N)'] = weighted_count
             results_theft_type.loc[display_name, f'{year} (%)'] = (weighted_count / total_year_victims) * 100
 
-        # Calculate Multiple Types
         theft_vars = list(theft_categories.values())
         year_df['type_count'] = (year_df[theft_vars] == 1).sum(axis=1)
         multiple_count = year_df[year_df['type_count'] > 1]['FINAL_ITS_WEIGHT'].sum()
         results_theft_type.loc['Multiple Types', f'{year} (N)'] = multiple_count
         results_theft_type.loc['Multiple Types', f'{year} (%)'] = (multiple_count / total_year_victims) * 100
 
-        # Calculate Discovery
+        # Discovery method
         for display_name, code in discovery_categories.items():
             count = year_df[year_df['HOW_DISCOVERED_MISUSE'] == code]['FINAL_ITS_WEIGHT'].sum()
             results_discovery.loc[display_name, f'{year} (N)'] = count
             results_discovery.loc[display_name, f'{year} (%)'] = (count / total_year_victims) * 100
 
-        # Calculate Method
+        # Theft method (how information was obtained)
         for display_name, code in theft_method_categories.items():
             count = year_df[year_df['THEFT_METHOD'] == code]['FINAL_ITS_WEIGHT'].sum()
             results_theft_method.loc[display_name, f'{year} (N)'] = count
             results_theft_method.loc[display_name, f'{year} (%)'] = (count / total_year_victims) * 100
 
-    # Combine all results
     combined_results = pd.concat(
         [results_theft_type, results_discovery, results_theft_method],
         keys=['Theft Type', 'Discovery Method', 'Obtainment Method'],
         names=['Section', 'Category']
     )
 
-    # Save to CSV
     combined_results.to_csv(output_csv_path)
-    print(f"Results saved to '{output_csv_path}'")
+    print(f"Data saved to {output_csv_path}")
 
-    # Preview formatting
     preview_df = combined_results.copy()
     for col in preview_df.columns:
         if '(N)' in col:
             preview_df[col] = preview_df[col].map('{:,.0f}'.format)
         else:
             preview_df[col] = preview_df[col].map('{:.1f}%'.format)
-    
-    print("\n--- TREND ANALYSIS PREVIEW ---")
+
+    print("\nTrend analysis preview:")
     print(preview_df.head(15))
+
 
 if __name__ == '__main__':
     analyze_theft_data_by_year()

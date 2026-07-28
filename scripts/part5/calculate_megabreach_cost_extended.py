@@ -1,154 +1,59 @@
-"""
-Extended mega-breach social cost analysis.
-
-Computes upper-bound social cost estimates for all qualifying mega-breaches
-(>= 10M records, within study period 2008-2021) using the same lifecycle
-model as in monthly_data_breach_conversion_beta.py.
-
-dark_web_verified:
-  True  — data credibly appeared on dark web / criminal markets (pre-populated
-           from public reporting; user should manually verify before publishing)
-  False — strong attribution to state-sponsored actors or data reportedly not
-           circulated; unlikely to drive consumer IDT
-  None  — insufficient public evidence; leave for manual review
-
-To run: python scripts/part5/calculate_megabreach_cost_extended.py
-"""
-
 import numpy as np
 import pandas as pd
 import os
 
-# ── Paths ──────────────────────────────────────────────────────────────────
-SOCIAL_COST_PATH  = 'data/processed/part2/social_cost/social_cost_analysis.csv'
-CONV_PATH         = 'data/processed/part5/conversion_data.csv'
-PRC_PATH          = 'data/processed/part3/PRC_augmented.csv'
-OUTPUT_DIR        = 'data/processed/part5'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# To run this script, make sure you are in the root (IDT_and_Breaches) directory and run:
+# python scripts/part5/calculate_megabreach_cost_extended.py
 
-# ── Model parameters (must match monthly_data_breach_conversion_beta.py) ──
-ALPHA        = 0.80   # monthly discount factor
-DISC_LAG     = 2      # discovery lag (months)
-THETA        = 1.75   # under-reporting scaler (baked into C_t_smooth already)
-SMOOTH_WIN   = 6      # smoothing window used when producing C_t_smooth
+"""
+Part 5: Mega-Breach Social Cost (Upper Bound)
 
-# ── Mega-breach catalogue ───────────────────────────────────────────────────
-# month       : YYYY-MM when data entered criminal ecosystem (discovery/disclosure)
-# records     : number of records exposed (best public estimate)
-# settlement  : total known corporate payout in USD (None if unknown/ongoing)
-# dark_web_verified:
-#   True  = data credibly appeared on dark web/criminal markets
-#   False = state-sponsored attribution; data unlikely to reach consumer markets
-#   None  = unclear; needs manual verification
-BREACH_DATA = [
-    {
-        "name": "Heartland Payment Systems",
-        "month": "2009-01",
-        "records": 130_000_000,
-        "settlement": 107_000_000,
-        "dark_web_verified": True,
-        "notes": "Payment card data sold on criminal forums; well-documented"
-    },
-    {
-        "name": "Target",
-        "month": "2013-12",
-        "records": 40_000_000,
-        "settlement": 18_500_000,
-        "dark_web_verified": True,
-        "notes": "Card data sold on rescator.su and other carder markets"
-    },
-    {
-        "name": "Anthem",
-        "month": "2015-02",
-        "records": 80_000_000,
-        "settlement": 115_000_000,
-        "dark_web_verified": False,
-        "notes": "Attributed to Chinese state actors (APT10/Deep Panda); "
-                 "health records not believed to have appeared on dark web"
-    },
-    {
-        "name": "T-Mobile (2015)",
-        "month": "2015-10",
-        "records": 15_100_000,
-        "settlement": None,
-        "dark_web_verified": None,
-        "notes": "Experian breach affecting T-Mobile applicants; "
-                 "dark web circulation unclear"
-    },
-    {
-        "name": "Yahoo (2013 breach, disclosed 2016)",
-        "month": "2016-12",
-        "records": 1_000_000_000,
-        "settlement": 117_500_000,
-        "dark_web_verified": True,
-        "notes": "Data sold on dark web by 'Peace' in 2016; "
-                 "originally 3B accounts, 1B used here per PRC entry"
-    },
-    {
-        "name": "Equifax",
-        "month": "2017-09",
-        "records": 147_000_000,
-        "settlement": 700_000_000,
-        "dark_web_verified": False,
-        "notes": "Attributed to Chinese military (PLA); data not observed on "
-                 "commercial dark web markets — reviewer flagged this"
-    },
-    {
-        "name": "Uber",
-        "month": "2017-11",
-        "records": 57_000_000,
-        "settlement": 148_000_000,
-        "dark_web_verified": None,
-        "notes": "Hackers paid $100K ransom to delete data; "
-                 "unclear if records circulated on dark web"
-    },
-    {
-        "name": "Marriott / Starwood",
-        "month": "2018-11",
-        "records": 500_000_000,
-        "settlement": 23_800_000,  # UK ICO fine (£18.4M ≈ $23.8M); class action ongoing
-        "dark_web_verified": False,
-        "notes": "Attributed to Chinese state actors; no credible dark web sales "
-                 "reported — similar state-actor concern as Equifax"
-    },
-    {
-        "name": "Under Armour / MyFitnessPal",
-        "month": "2018-03",
-        "records": 150_000_000,
-        "settlement": 3_500_000,
-        "dark_web_verified": True,
-        "notes": "Username/password data appeared on dark web markets"
-    },
-    {
-        "name": "Capital One",
-        "month": "2019-07",
-        "records": 100_000_000,
-        "settlement": 190_000_000,
-        "dark_web_verified": False,
-        "notes": "Insider/cloud-misconfiguration; perpetrator arrested before "
-                 "distributing data — no evidence of wide dark web circulation"
-    },
-    {
-        "name": "Zynga",
-        "month": "2019-09",
-        "records": 200_000_000,
-        "settlement": None,
-        "dark_web_verified": True,
-        "notes": "Game credential data sold by 'GnosticPlayers' on dark web"
-    },
-    {
-        "name": "T-Mobile (2021)",
-        "month": "2021-08",
-        "records": 53_700_000,
-        "settlement": 350_000_000,
-        "dark_web_verified": True,
-        "notes": "SSN/driver's licence data sold on RaidForums cybercrime forum"
-    },
-]
+Computes the upper-bound social cost estimate for every breach in the
+augmented PRC dataset above a minimum size, using the same
+alpha-discounted lifecycle model as monthly_data_breach_conversion_beta.py.
+This is the projected long-term impact estimate. The paper's lower
+bound (the empirically measured short-term impact from the Wilcoxon
+signed-rank test) is computed separately, in part6.
+
+Setup:
+For a breach of size B occurring at time t, the remaining "fresh"
+records from that breach in a later month k are estimated as
+B * alpha^(k-t), starting from a discovery lag of two months
+(k = t + 2) through the end of the study period. Multiplying by the
+conversion rate at month k gives the estimated victims that month, and
+weighting by the interpolated social cost per victim at month k gives
+the estimated cost. Summing across the study period gives the total
+projected victims and social cost for that breach.
+
+Goal:
+Produce the upper-bound social cost estimate for every qualifying
+breach in the augmented PRC dataset.
+
+Outputs:
+- data/processed/part5/megabreach_social_cost_comparison_extended.csv:
+  one row per qualifying breach, with projected victims and social
+  cost.
+"""
+
+ALPHA = 0.80  # Monthly discount factor, matches monthly_data_breach_conversion_beta.py.
+DISC_LAG = 2  # Months after a breach before its records start converting into attributed IDT victims.
+MIN_RECORDS = 1_000_000  # Minimum breach size to include.
+
+
+def load_qualifying_breaches(prc_path, min_records):
+    """Breaches from the augmented PRC dataset at or above min_records, with their report month."""
+    df = pd.read_csv(prc_path)
+    df['reported_date'] = pd.to_datetime(df['reported_date'], errors='coerce')
+    df = df.dropna(subset=['reported_date'])
+    df = df[df['total_affected'] >= min_records].copy()
+    df['month'] = df['reported_date'].dt.to_period('M').astype(str)
+    df = df.sort_values('reported_date').reset_index(drop=True)
+    return df[['org_name', 'month', 'total_affected']].rename(
+        columns={'org_name': 'name', 'total_affected': 'records'})
 
 
 def fit_log_quadratic(conv_df):
-    """Re-fit log-quadratic to C_t_smooth (Eq. 3), returning a poly1d."""
+    """Re-fits ln(C_t_smooth) = a*t^2 + b*t + c from the alpha-discounted conversion data. Returns a poly1d."""
     df = conv_df.dropna(subset=['C_t_smooth']).copy()
     df['t'] = np.arange(len(conv_df))[conv_df['C_t_smooth'].notna()]
     coeffs = np.polyfit(df['t'].values, np.log(df['C_t_smooth'].values), 2)
@@ -157,13 +62,27 @@ def fit_log_quadratic(conv_df):
 
 def upper_bound_cost(breach_month_str, records, conv_df, poly_log, social_cost_fn):
     """
-    Sum lifecycle victims × time-varying social cost over the remainder of the
-    study period, starting DISC_LAG months after the breach.
+    Projected long-term victims and social cost for one breach, summed
+    from a discovery lag of two months through the end of the study
+    period.
+
+    Args:
+        breach_month_str (str): the breach's report month, as it
+            appears in conv_df's Month_Str column.
+        records (float): total records exposed in the breach.
+        conv_df (pd.DataFrame): monthly conversion rate data, with a
+            Month_Str column.
+        poly_log (np.poly1d): the log-quadratic conversion rate fit.
+        social_cost_fn (callable): month index -> social cost per victim.
+
+    Returns:
+        (float, float) or (None, None): total projected victims and
+        total projected social cost, or (None, None) if the breach
+        month isn't found in conv_df.
     """
     conv_df = conv_df.copy().reset_index(drop=True)
     conv_df['t'] = np.arange(len(conv_df))
 
-    # Find index of breach month
     match = conv_df[conv_df['Month_Str'] == breach_month_str]
     if match.empty:
         return None, None
@@ -171,77 +90,71 @@ def upper_bound_cost(breach_month_str, records, conv_df, poly_log, social_cost_f
     start_idx = T_idx + DISC_LAG
 
     total_victims = 0.0
-    total_cost    = 0.0
+    total_cost = 0.0
     for k in range(start_idx, len(conv_df)):
         months_since = k - T_idx
         fresh_records = records * (ALPHA ** months_since)
-        conv_rate     = np.exp(poly_log(conv_df.loc[k, 't'])) / 100_000
-        victims_k     = fresh_records * conv_rate
-        cost_k        = social_cost_fn(conv_df.loc[k, 't'])
+        conv_rate = np.exp(poly_log(conv_df.loc[k, 't'])) / 100_000
+        victims_k = fresh_records * conv_rate
+        cost_k = social_cost_fn(conv_df.loc[k, 't'])
         total_victims += victims_k
-        total_cost    += victims_k * cost_k
+        total_cost += victims_k * cost_k
     return total_victims, total_cost
 
 
 def make_social_cost_fn(cost_df):
-    """Return a function t -> $/victim via piecewise linear interpolation.
-
-    Anchor t values are the survey wave start months (months since Jan 2008),
-    matching the convention used in the paper: 2008→t=0, 2012→t=48, etc.
-    """
-    SURVEY_WAVE_T = {2008: 0, 2012: 48, 2014: 72, 2016: 96, 2018: 120, 2021: 156}
-    known_t    = [SURVEY_WAVE_T[y] for y in cost_df['Year'] if y in SURVEY_WAVE_T]
+    """Builds a month index -> social cost per victim function, via piecewise linear interpolation between survey wave anchors."""
+    survey_wave_t = {2008: 0, 2012: 48, 2014: 72, 2016: 96, 2018: 120, 2021: 156}
+    known_t = [survey_wave_t[y] for y in cost_df['Year'] if y in survey_wave_t]
     known_cost = [cost_df.loc[cost_df['Year'] == y, 'Total Social Cost per Victim ($)'].values[0]
-                  for y in cost_df['Year'] if y in SURVEY_WAVE_T]
+                  for y in cost_df['Year'] if y in survey_wave_t]
     return lambda t: float(np.interp(t, known_t, known_cost))
 
 
 def main():
-    cost_df = pd.read_csv(SOCIAL_COST_PATH)
-    conv_df = pd.read_csv(CONV_PATH)
+    print("\n--- Part 5: Mega-Breach Social Cost (Upper Bound) ---")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, "../../"))
+
+    social_cost_path = os.path.join(root_dir, 'data/processed/part2/social_cost/social_cost_analysis.csv')
+    conv_path = os.path.join(root_dir, 'data/processed/part5/conversion_data.csv')
+    prc_path = os.path.join(root_dir, 'data/processed/part3/PRC_augmented.csv')
+    output_dir = os.path.join(root_dir, 'data/processed/part5')
+    os.makedirs(output_dir, exist_ok=True)
+
+    cost_df = pd.read_csv(social_cost_path)
+    print(f"Loaded data from {social_cost_path}")
+    conv_df = pd.read_csv(conv_path)
+    print(f"Loaded data from {conv_path}")
     conv_df['Date'] = pd.to_datetime(conv_df['Date'])
 
-    poly_log       = fit_log_quadratic(conv_df)
+    poly_log = fit_log_quadratic(conv_df)
     social_cost_fn = make_social_cost_fn(cost_df)
 
+    breaches = load_qualifying_breaches(prc_path, MIN_RECORDS)
+    print(f"Loaded data from {prc_path}")
+
     rows = []
-    for b in BREACH_DATA:
+    for _, b in breaches.iterrows():
         victims_ub, cost_ub = upper_bound_cost(
             b['month'], b['records'], conv_df, poly_log, social_cost_fn
         )
-
-        # Snapshot conversion rate at breach month for reference
-        match = conv_df[conv_df['Month_Str'] == b['month']]
-        rate_snap = float(match['C_t_smooth'].values[0]) if not match.empty else None
-
-        harm_ratio = (cost_ub / b['settlement']) if (cost_ub and b['settlement']) else None
-
         rows.append({
-            'breach':                   b['name'],
-            'month':                    b['month'],
-            'records_exposed':          b['records'],
-            'settlement_usd':           b['settlement'],
-            'conv_rate_per_100k':       rate_snap,
-            'ub_projected_victims':     round(victims_ub) if victims_ub else None,
-            'ub_social_cost_usd':       round(cost_ub, 2) if cost_ub else None,
-            'ub_social_cost_B':         round(cost_ub / 1e9, 3) if cost_ub else None,
-            'harm_to_settlement_ratio': round(harm_ratio, 1) if harm_ratio else None,
-            'dark_web_verified':        b['dark_web_verified'],
-            'notes':                    b['notes'],
+            'breach': b['name'],
+            'month': b['month'],
+            'records_exposed': b['records'],
+            'ub_projected_victims': round(victims_ub) if victims_ub else None,
+            'ub_social_cost_usd': round(cost_ub, 2) if cost_ub else None,
+            'ub_social_cost_B': round(cost_ub / 1e9, 3) if cost_ub else None,
         })
-
-        print(f"\n{b['name']} ({b['month']})")
-        print(f"  Records:          {b['records']:>15,.0f}")
-        print(f"  UB Victims:       {victims_ub:>15,.0f}" if victims_ub else "  UB Victims:       N/A")
-        print(f"  UB Social Cost:   ${cost_ub/1e9:>10.3f}B" if cost_ub else "  UB Social Cost:   N/A")
-        if harm_ratio:
-            print(f"  Harm/Settlement:  {harm_ratio:>10.1f}x")
-        print(f"  Dark Web:         {b['dark_web_verified']}")
+        if victims_ub and cost_ub:
+            print(f"{b['name']} ({b['month']}): {victims_ub:,.0f} victims, ${cost_ub/1e9:.3f}B")
 
     out = pd.DataFrame(rows)
-    path = os.path.join(OUTPUT_DIR, 'megabreach_social_cost_comparison_extended.csv')
-    out.to_csv(path, index=False)
-    print(f"\nSaved → {path}")
+    output_path = os.path.join(output_dir, 'megabreach_social_cost_comparison_extended.csv')
+    out.to_csv(output_path, index=False)
+    print(f"\nData saved to {output_path}")
 
 
 if __name__ == '__main__':

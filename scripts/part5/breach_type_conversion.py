@@ -2,68 +2,52 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+from matplotlib.transforms import blended_transform_factory
 import os
 
+# To run this script, make sure you are in the root (IDT_and_Breaches) directory and run:
 # python scripts/part5/breach_type_conversion.py
-#
-# Computes breach-type-specific conversion rates (nU) and updates the
-# upper-bound social cost estimates for Heartland, Target, and Equifax
-# using the HACK-specific log-quadratic fit.
-#
-# Outputs
-# -------
-# plots/part5/breach_type_nU.pdf/.png          -- nU by type over time
-# plots/part5/breach_type_conversion.pdf/.png  -- conversion rate by type + fits
-# data/processed/part5/breach_type_conversion.csv
-# data/processed/part5/breach_type_fit_coeffs.csv
-# data/processed/part5/breach_type_case_study_costs.csv  (updated upper bounds)
 
-# ── PATHS ──────────────────────────────────────────────────────────────────────
-ITS_DATA_PATH      = 'data/processed/part1/its_victims.parquet'
-PRC_PATH           = 'data/processed/part3/PRC_augmented.csv'
-SOCIAL_COST_PATH   = 'data/processed/part2/social_cost/social_cost_analysis.csv'
-OUTPUT_CSV_DIR     = 'data/processed/part5'
-OUTPUT_PLOT_DIR    = os.path.join('plots', 'part5')
-os.makedirs(OUTPUT_CSV_DIR, exist_ok=True)
-os.makedirs(OUTPUT_PLOT_DIR, exist_ok=True)
+"""
+Part 5: HACK-Specific Breach-to-Victim Conversion Rate
 
-# ── PARAMETERS ─────────────────────────────────────────────────────────────────
-ALPHA         = 0.80   # monthly discount factor α (Eq. 1 in paper)
-SMOOTH_WINDOW = 6      # months for moving-average smoothing
-CUTOFF_DATE   = '2022-01-01'
-START_DATE    = '2008-01-01'
-THETA         = 1.75   # under-reporting scaler (matches saturation model)
-DISC_LAG      = 2      # discovery lag used in upper-bound projections
+The aggregate conversion rate treats all breach types uniformly, but
+the PRC dataset classifies each incident by its method of compromise.
+This computes the conversion rate restricted to HACK (hacking or
+malware intrusion) breaches only, the type behind all four of the
+paper's mega-breach case studies, using the same alpha-discounted
+cumulative pool as the aggregate rate, restricted to HACK records.
 
-# Breach types to analyse (merge PORT into PHYS since both are physical)
-# UNKN excluded — cannot be attributed to a meaningful category
-PHYS_TYPES = {'PHYS', 'PORT'}
-TYPE_MAP   = {'HACK': 'HACK', 'PHYS': 'PHYS/PORT', 'PORT': 'PHYS/PORT',
-              'DISC': 'DISC', 'INSD': 'INSD'}
-FOCUS_TYPES = ['HACK', 'PHYS/PORT', 'DISC', 'INSD']
+Setup:
+Reads monthly victim counts from the ITS victims-only dataset from
+part1, and monthly HACK-type records exposed from the augmented PRC
+dataset from part3. ALPHA=0.80 and THETA=1.75 match the aggregate
+conversion rate model.
 
-TYPE_COLORS = {
-    'HACK':     '#5B2D8E',   # deep purple  (matches existing paper purple)
-    'PHYS/PORT':'#E07B39',   # amber
-    'DISC':     '#2E8B57',   # sea green
-    'INSD':     '#C0392B',   # red
-}
+Goal:
+Produce the HACK-specific conversion rate and its log-quadratic fit.
 
-# Heartland (Jan 2009) is a HACK breach absent from PRC — add it manually.
-# All other major breaches (Target, Equifax, etc.) are already in PRC_augmented.
-HACK_MEGA_SHOCKS = {
-    '2009-01': 130_000_000,
-}
+Outputs:
+- data/processed/part5/breach_type_conversion.csv: monthly HACK-type
+  discounted record pool and conversion rate.
+- data/processed/part5/breach_type_fit_coeffs.csv: the log-quadratic
+  fit coefficients.
+- plots/part5/breach_type_nU.png/.pdf: the HACK-type discounted
+  cumulative record pool over time.
+- plots/part5/breach_type_conversion.png/.pdf: the HACK-specific
+  conversion rate, with a log-quadratic fit and mega-breach events
+  annotated.
+"""
 
-# Case studies — all HACK
-CASE_STUDIES = [
-    {'name': 'Heartland', 'date': '2009-01-01', 'size':   130_000_000},
-    {'name': 'Target',    'date': '2013-12-01', 'size':    40_000_000},
-    {'name': 'Yahoo',     'date': '2016-12-01', 'size': 1_000_000_000},
-    {'name': 'Equifax',   'date': '2017-09-01', 'size':   147_000_000},
-]
-SOCIAL_COST_INTERP_T    = [0,  48,  72,  96, 120, 156]
-SOCIAL_COST_INTERP_VALS = [1110.31, 921.38, 853.41, 245.27, 244.40, 295.73]
+ALPHA = 0.80  # Monthly discount factor.
+SMOOTH_WINDOW = 6
+CUTOFF_DATE = '2022-01-01'
+START_DATE = '2008-01-01'
+THETA = 1.75  # Under-reporting scaler, matches the saturation model.
+
+TYPE_MAP = {'HACK': 'HACK'}
+FOCUS_TYPES = ['HACK']
+TYPE_COLORS = {'HACK': '#5B2D8E'}
 
 plt.style.use('seaborn-v0_8-paper')
 plt.rcParams.update({
@@ -72,10 +56,10 @@ plt.rcParams.update({
     'legend.fontsize': 22, 'figure.titlesize': 35,
 })
 
-# ── HELPERS ────────────────────────────────────────────────────────────────────
 
-def load_its_monthly():
-    df = pd.read_parquet(ITS_DATA_PATH)
+def load_its_monthly(its_data_path):
+    """Monthly weighted victim counts from the ITS victims-only dataset, by discovery month."""
+    df = pd.read_parquet(its_data_path)
     q2m = {1.0: 2, 2.0: 5, 3.0: 8, 4.0: 11}
     for c in ['DISCOVERY_MONTH', 'INTERVIEW_QUARTER', 'year']:
         df[c] = pd.to_numeric(df[c], errors='coerce')
@@ -89,8 +73,9 @@ def load_its_monthly():
     return monthly
 
 
-def load_prc_by_type():
-    df = pd.read_csv(PRC_PATH)
+def load_prc_by_type(prc_path):
+    """Loads the augmented PRC dataset and labels each incident's breach type, keeping only types in TYPE_MAP."""
+    df = pd.read_csv(prc_path)
     df['reported_date'] = pd.to_datetime(df['reported_date'], errors='coerce')
     df = df.dropna(subset=['reported_date'])
     df['label'] = df['group_org_breach_type'].map(TYPE_MAP)
@@ -99,27 +84,18 @@ def load_prc_by_type():
 
 
 def build_full_date_index():
+    """A complete month-by-month index spanning the study period, used to fill in months with no incidents of a given type."""
     idx = pd.period_range(start=START_DATE, end=CUTOFF_DATE, freq='M')
     return pd.DataFrame({'Year_Month': idx.strftime('%Y-%m')})
 
 
 def get_monthly_records(df_prc, label):
-    """Return monthly raw record counts for one breach-type label."""
+    """Monthly raw record counts for one breach-type label, zero-filled for months with no incidents of that type."""
     sub = df_prc[df_prc['label'] == label].copy()
     monthly = (sub.groupby('Year_Month')['total_affected_imputed']
                   .sum()
                   .reset_index()
                   .rename(columns={'total_affected_imputed': 'Raw_Records'}))
-
-    if label == 'HACK':
-        for ym, shock in HACK_MEGA_SHOCKS.items():
-            row = monthly[monthly['Year_Month'] == ym]
-            if row.empty:
-                monthly = pd.concat([monthly, pd.DataFrame({'Year_Month': [ym], 'Raw_Records': [shock]})],
-                                    ignore_index=True)
-            else:
-                monthly.loc[monthly['Year_Month'] == ym, 'Raw_Records'] = \
-                    monthly.loc[monthly['Year_Month'] == ym, 'Raw_Records'].values[0] + shock
 
     full = build_full_date_index()
     monthly = full.merge(monthly, on='Year_Month', how='left').fillna(0)
@@ -128,7 +104,7 @@ def get_monthly_records(df_prc, label):
 
 
 def discounted_cumsum(series, alpha):
-    """D_t^τ = Σ α^(t-k) · θ · M_k^τ  (type-specific Eq. 1 variant)"""
+    """Alpha-discounted cumulative record pool for a single breach type, theta-scaled for under-reporting."""
     result = []
     current = 0.0
     for v in series:
@@ -138,7 +114,7 @@ def discounted_cumsum(series, alpha):
 
 
 def fit_log_quadratic(months_idx, rate_smoothed):
-    """Fit ln(rate) = a*t^2 + b*t + c; return poly1d and coefficients."""
+    """Fits ln(rate) = a*t^2 + b*t + c. Returns (None, None) if fewer than 5 valid points."""
     valid = ~np.isnan(rate_smoothed)
     if valid.sum() < 5:
         return None, None
@@ -147,20 +123,32 @@ def fit_log_quadratic(months_idx, rate_smoothed):
 
 
 def format_sci(val):
+    """Formats a float in LaTeX scientific notation, e.g. 1.41 \\times 10^{-4}."""
     s = f'{val:.4e}'
     base, exp = s.split('e')
     return f'{base} \\times 10^{{{int(exp)}}}'
 
 
-# ── MAIN ───────────────────────────────────────────────────────────────────────
-
 def main():
-    print('Loading ITS and PRC data...')
-    its_df  = load_its_monthly()
-    prc_df  = load_prc_by_type()
+    print("\n--- Part 5: HACK-Specific Breach-to-Victim Conversion Rate ---")
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(script_dir, "../../"))
+
+    its_data_path = os.path.join(root_dir, 'data/processed/part1/its_victims.parquet')
+    prc_path = os.path.join(root_dir, 'data/processed/part3/PRC_augmented.csv')
+    output_csv_dir = os.path.join(root_dir, 'data/processed/part5')
+    output_plot_dir = os.path.join(root_dir, 'plots/part5')
+    os.makedirs(output_csv_dir, exist_ok=True)
+    os.makedirs(output_plot_dir, exist_ok=True)
+
+    its_df = load_its_monthly(its_data_path)
+    print(f"Loaded data from {its_data_path}")
+    prc_df = load_prc_by_type(prc_path)
+    print(f"Loaded data from {prc_path}")
     full_df = build_full_date_index()
 
-    # Interpolate ITS victims onto full monthly grid
+    # Interpolate ITS victims onto the full monthly grid.
     base = full_df.merge(its_df, on='Year_Month', how='left')
     base['Date'] = pd.to_datetime(base['Year_Month'])
     base = base[(base['Date'] >= START_DATE) & (base['Date'] < CUTOFF_DATE)].reset_index(drop=True)
@@ -168,36 +156,32 @@ def main():
     base['Estimated_Victims'] = np.exp(np.log(base['Estimated_Victims']).interpolate(method='linear')).ffill().bfill()
     base['t'] = np.arange(len(base))
 
-    # Per-type conversion rate table
-    all_rows  = []
-    fit_rows  = []
-    polys     = {}   # label -> poly1d
+    all_rows = []
+    fit_rows = []
 
-    # ── TYPE-SPECIFIC LOOP ──────────────────────────────────────────────────────
     for label in FOCUS_TYPES:
-        print(f'  Processing {label}...')
+        print(f"Processing {label}...")
         monthly_rec = get_monthly_records(prc_df, label)
         merged = base.copy()
         merged = merged.merge(monthly_rec, on='Year_Month', how='left').fillna({'Raw_Records': 0})
         merged['D_t'] = discounted_cumsum(merged['Raw_Records'].values, ALPHA)
 
-        # Avoid division by near-zero
+        # Avoid dividing by a near-zero pool in the earliest months.
         min_pool = merged['D_t'].replace(0, np.nan).quantile(0.05)
         merged['D_t_safe'] = merged['D_t'].clip(lower=max(min_pool, 1))
 
-        merged['C_t_raw']    = (merged['Estimated_Victims'] / merged['D_t_safe']) * 100_000
+        merged['C_t_raw'] = (merged['Estimated_Victims'] / merged['D_t_safe']) * 100_000
         merged['C_t_smooth'] = merged['C_t_raw'].rolling(SMOOTH_WINDOW, center=True).mean()
-        merged['Label']      = label
+        merged['Label'] = label
 
         poly, coeffs = fit_log_quadratic(merged['t'].values, merged['C_t_smooth'].values)
         if poly is not None:
             merged['C_t_fit'] = np.exp(poly(merged['t'].values))
-            polys[label] = (poly, coeffs)
             fit_rows.append({
                 'breach_type': label,
                 'a': coeffs[0], 'b': coeffs[1], 'c': coeffs[2],
             })
-            print(f'    ln(C) = ({format_sci(coeffs[0])})t² + ({format_sci(coeffs[1])})t + {coeffs[2]:.4f}')
+            print(f"  ln(C) = ({format_sci(coeffs[0])})t^2 + ({format_sci(coeffs[1])})t + {coeffs[2]:.4f}")
         else:
             merged['C_t_fit'] = np.nan
 
@@ -206,13 +190,16 @@ def main():
                                  'C_t_smooth', 'C_t_fit']])
 
     combined = pd.concat(all_rows, ignore_index=True)
-    combined.to_csv(f'{OUTPUT_CSV_DIR}/breach_type_conversion.csv', index=False)
+    output_csv_path = os.path.join(output_csv_dir, 'breach_type_conversion.csv')
+    combined.to_csv(output_csv_path, index=False)
+    print(f"Data saved to {output_csv_path}")
 
     fit_df = pd.DataFrame(fit_rows)
-    fit_df.to_csv(f'{OUTPUT_CSV_DIR}/breach_type_fit_coeffs.csv', index=False)
-    print(f'\nFit coefficients:\n{fit_df.to_string(index=False)}')
+    fit_coeffs_path = os.path.join(output_csv_dir, 'breach_type_fit_coeffs.csv')
+    fit_df.to_csv(fit_coeffs_path, index=False)
+    print(f"Data saved to {fit_coeffs_path}")
 
-    # ── FIGURE 1: nU (D_t) BY TYPE ─────────────────────────────────────────────
+    print("Plotting discounted cumulative records...")
     fig, ax = plt.subplots(figsize=(16, 10))
     for label in FOCUS_TYPES:
         sub = combined[combined['Label'] == label].copy()
@@ -221,7 +208,7 @@ def main():
                 color=TYPE_COLORS[label], linewidth=4)
     ax.set_yscale('log')
     ax.set_ylabel(r'Discounted Cumulative Records ($n_U$)')
-    ax.set_title(r'Discounted Cumulative Exposed Records ($n_U$) by Breach Type')
+    ax.set_title(r'Discounted Cumulative Exposed Records ($n_U$), HACK Breaches')
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(
         lambda x, _: (f'{x/1e9:.1f}B' if x >= 1e9
                       else f'{x/1e6:.0f}M' if x >= 1e6
@@ -230,99 +217,44 @@ def main():
     ax.legend(frameon=True)
     ax.grid(True, which='both', linestyle='--', alpha=0.4)
     plt.tight_layout()
-    fig.savefig(f'{OUTPUT_PLOT_DIR}/breach_type_nU.pdf', bbox_inches='tight')
-    fig.savefig(f'{OUTPUT_PLOT_DIR}/breach_type_nU.png', dpi=150, bbox_inches='tight')
+    fig.savefig(os.path.join(output_plot_dir, 'breach_type_nU.pdf'), bbox_inches='tight')
+    fig.savefig(os.path.join(output_plot_dir, 'breach_type_nU.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    # ── FIGURE 2: CONVERSION RATE BY TYPE ──────────────────────────────────────
+    print("Plotting conversion rate...")
     fig, ax = plt.subplots(figsize=(16, 11))
     for label in FOCUS_TYPES:
         sub = combined[combined['Label'] == label]
-        c   = TYPE_COLORS[label]
+        c = TYPE_COLORS[label]
         ax.plot(sub['Date'], sub['C_t_smooth'], color=c, linewidth=4,
                 alpha=0.75, label=f'{label} (6-mo avg)')
         if 'C_t_fit' in sub.columns:
             ax.plot(sub['Date'], sub['C_t_fit'], color=c, linewidth=3,
                     linestyle='--', alpha=0.9, label=f'{label} fit')
 
-    # Event lines + labels below the x-axis
-    # blended transform: x in data coords, y in axes fraction (allows clip_on=False)
-    from matplotlib.transforms import blended_transform_factory
     btrans = blended_transform_factory(ax.transData, ax.transAxes)
-
     events = [('Heartland', '2009-01-01'), ('Target', '2013-12-01'), ('Equifax', '2017-09-01')]
     for ev_name, ev_date in events:
         xdate = pd.to_datetime(ev_date)
-        # Vertical line extending from slightly below axis up to top of plot
         ax.plot([xdate, xdate], [-0.09, 1.0], transform=btrans,
                 color='#333333', linestyle=':', linewidth=2.5, clip_on=False)
-        # Label sits below the x-axis tick labels
         ax.text(xdate, -0.13, ev_name, transform=btrans,
                 fontsize=20, ha='center', va='top',
                 color='#333333', clip_on=False, fontweight='bold')
 
     ax.set_yscale('log')
     ax.set_ylabel(r'IDT Victims per 100k Discounted Records ($n_U$)')
-    ax.set_title('Breach-Type-Specific Conversion Rate ($\\mathcal{C}_t$)')
-    ax.legend(frameon=True, ncol=2, fontsize=18, loc='upper right')
+    ax.set_title('HACK-Specific Conversion Rate ($\\mathcal{C}_t$)')
+    ax.legend(frameon=True, loc='upper right')
     ax.grid(True, which='both', linestyle='--', alpha=0.4)
     plt.tight_layout()
-    # Extra bottom margin so below-axis labels don't get clipped
+    # Extra bottom margin so the below-axis event labels don't get clipped.
     plt.subplots_adjust(bottom=0.15)
-    fig.savefig(f'{OUTPUT_PLOT_DIR}/breach_type_conversion.pdf', bbox_inches='tight')
-    fig.savefig(f'{OUTPUT_PLOT_DIR}/breach_type_conversion.png', dpi=150, bbox_inches='tight')
+    fig.savefig(os.path.join(output_plot_dir, 'breach_type_conversion.pdf'), bbox_inches='tight')
+    fig.savefig(os.path.join(output_plot_dir, 'breach_type_conversion.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f'Figures saved to {OUTPUT_PLOT_DIR}')
 
-    # ── UPPER-BOUND CASE STUDIES WITH HACK-SPECIFIC FIT ────────────────────────
-    if 'HACK' not in polys:
-        print('ERROR: HACK fit unavailable — cannot update case study upper bounds.')
-        return
-
-    hack_poly, hack_coeffs = polys['HACK']
-    print(f'\nHACK fit: ln(C) = ({format_sci(hack_coeffs[0])})t² + '
-          f'({format_sci(hack_coeffs[1])})t + {hack_coeffs[2]:.4f}')
-
-    hack_dates = base.copy()
-    hack_dates['C_hack'] = np.exp(hack_poly(hack_dates['t'].values))
-
-    results = []
-    for cs in CASE_STUDIES:
-        T_date = pd.to_datetime(cs['date'])
-        T_row  = hack_dates[hack_dates['Date'] == T_date]
-        if T_row.empty:
-            print(f"WARNING: {cs['name']} date not in date index — skipping.")
-            continue
-        T_idx  = T_row.index[0]
-        lag    = T_idx + DISC_LAG
-
-        total_victims   = 0.0
-        total_cost      = 0.0
-        for k in range(lag, len(hack_dates)):
-            months_since = k - T_idx
-            fresh_records = cs['size'] * (ALPHA ** months_since)
-            t_k           = hack_dates.iloc[k]['t']
-            conv_rate     = np.exp(hack_poly(t_k)) / 100_000
-            monthly_vic   = fresh_records * conv_rate
-            sc_per_victim = np.interp(t_k, SOCIAL_COST_INTERP_T, SOCIAL_COST_INTERP_VALS)
-            total_victims += monthly_vic
-            total_cost    += monthly_vic * sc_per_victim
-
-        results.append({
-            'Breach':                      cs['name'],
-            'Month':                       cs['date'][:7],
-            'Records Exposed':             cs['size'],
-            'Total Projected Victims':     round(total_victims),
-            'Upper Bound Social Cost ($)': round(total_cost, 2),
-            'Upper Bound Social Cost ($B)': round(total_cost / 1e9, 3),
-        })
-        print(f"\n{cs['name']} (HACK-specific fit):")
-        print(f"  Projected Victims:      {total_victims:,.0f}")
-        print(f"  Upper Bound Soc. Cost: ${total_cost:,.2f}  (${total_cost/1e9:.3f}B)")
-
-    results_df = pd.DataFrame(results)
-    results_df.to_csv(f'{OUTPUT_CSV_DIR}/breach_type_case_study_costs.csv', index=False)
-    print(f'\nCase study results saved to {OUTPUT_CSV_DIR}/breach_type_case_study_costs.csv')
+    print(f"\nData saved to {output_plot_dir}")
 
 
 if __name__ == '__main__':
