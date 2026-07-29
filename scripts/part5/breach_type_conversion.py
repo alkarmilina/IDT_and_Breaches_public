@@ -49,6 +49,9 @@ TYPE_MAP = {'HACK': 'HACK'}
 FOCUS_TYPES = ['HACK']
 TYPE_COLORS = {'HACK': '#5B2D8E'}
 
+# Heartland (Jan 2009) is a HACK breach absent from PRC — added manually.
+HACK_MEGA_SHOCKS = {'2009-01': 130_000_000}
+
 plt.style.use('seaborn-v0_8-paper')
 plt.rcParams.update({
     'font.size': 30, 'axes.titlesize': 30, 'axes.labelsize': 30,
@@ -100,6 +103,11 @@ def get_monthly_records(df_prc, label):
     full = build_full_date_index()
     monthly = full.merge(monthly, on='Year_Month', how='left').fillna(0)
     monthly = monthly.sort_values('Year_Month').reset_index(drop=True)
+
+    if label == 'HACK':
+        for ym, shock in HACK_MEGA_SHOCKS.items():
+            monthly.loc[monthly['Year_Month'] == ym, 'Raw_Records'] += shock
+
     return monthly
 
 
